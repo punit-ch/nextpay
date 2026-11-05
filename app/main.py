@@ -1,15 +1,13 @@
-from decimal import Decimal
+﻿from decimal import Decimal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from app.ai_agent import parse_intent, AIUnavailableError
-from app.catalog import CATALOG
-
-from app.catalog import list_products
+from app.ai_agent import AIUnavailableError, parse_intent
+from app.catalog import CATALOG, list_products
 from app.policy import PolicyViolation, validate_purchase
-from app.paypal_client import get_access_token, PayPalError
+from app.paypal_client import PayPalError, create_paypal_order, get_access_token
 
 app = FastAPI(
     title="NEXTPAY",
@@ -20,8 +18,6 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Temporary in-memory state for local development only.
-# Replace with persistent storage before deploying.
 plans: dict[str, dict] = {}
 
 
@@ -35,8 +31,10 @@ class PlanRequest(BaseModel):
 class ApprovalRequest(BaseModel):
     approved: bool
 
+
 class AgentRequest(BaseModel):
     message: str = Field(min_length=10, max_length=1000)
+
 
 @app.get("/health")
 def health():
@@ -63,7 +61,6 @@ def create_plan(request: PlanRequest):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     plan_id = str(uuid4())
-
     plan = {
         "plan_id": plan_id,
         "goal": request.goal,
@@ -75,7 +72,6 @@ def create_plan(request: PlanRequest):
             "No payment has been created."
         ),
     }
-
     plans[plan_id] = plan
     return plan
 
@@ -98,7 +94,6 @@ def approve_plan(plan_id: str, request: ApprovalRequest):
         plan["message"] = "The user rejected this purchase."
         return plan
 
-    # Recalculate from trusted catalogue data at approval time.
     purchase = plan["purchase"]
 
     try:
@@ -129,6 +124,7 @@ def get_plan(plan_id: str):
 
     return plan
 
+
 @app.post("/api/agent/recommend")
 def agent_recommend(request: AgentRequest):
     try:
@@ -149,25 +145,23 @@ def agent_recommend(request: AgentRequest):
         }
 
     candidates = []
-
     for product in CATALOG.values():
         if intent.category not in ("any", product["category"]):
             continue
-
         if product["price"] > intent.budget_limit:
             continue
 
-        candidates.append({
-            "product_id": product["id"],
-            "name": product["name"],
-            "price": str(product["price"]),
-            "currency": "USD",
-            "sample_data": True,
-        })
+        candidates.append(
+            {
+                "product_id": product["id"],
+                "name": product["name"],
+                "price": str(product["price"]),
+                "currency": "USD",
+                "sample_data": True,
+            }
+        )
 
-    # Deterministic ordering; the model does not invent rankings.
     candidates.sort(key=lambda item: Decimal(item["price"]))
-
     return {
         "status": "recommendations_ready",
         "intent": intent.model_dump(mode="json"),
@@ -178,11 +172,12 @@ def agent_recommend(request: AgentRequest):
         ),
         "payment_status": "not_started",
     }
+
+
 @app.get("/api/paypal/test-auth")
 async def test_paypal_auth():
     try:
         token_data = await get_access_token()
-
         return {
             "success": True,
             "message": "Successfully authenticated with PayPal Sandbox.",
@@ -190,10 +185,56 @@ async def test_paypal_auth():
             "expires_in": token_data["expires_in"],
             "environment": "sandbox",
         }
-
     except PayPalError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/plans/{plan_id}/paypal/create-order")
+async def create_plan_paypal_order(plan_id: str):
+    plan = plans.get(plan_id)
+
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found.")
+
+    if plan.get("status") != "approved_by_user":
         raise HTTPException(
-            status_code=502,
-            detail=str(exc)
-        )    
-    
+            status_code=403,
+            detail="User approval is required before creating a PayPal order.",
+        )
+
+    if plan.get("payment_status") != "not_started":
+        raise HTTPException(
+            status_code=409,
+            detail="Payment has already been started or completed.",
+        )
+
+    try:
+        purchase = plan.get("purchase", {})
+        validated = validate_purchase(
+            product_id=purchase["product_id"],
+            quantity=purchase["quantity"],
+            budget_limit=Decimal(str(purchase["budget_limit"])),
+        )
+
+        result = await create_paypal_order(
+            amount=str(validated["total"]),
+            description=validated["product_name"],
+            plan_id=plan_id,
+        )
+
+        plan["paypal_order_id"] = result["paypal_order_id"]
+        plan["payment_status"] = "awaiting_paypal_approval"
+
+        return {
+            "success": True,
+            "plan_id": plan_id,
+            "paypal_order_id": result["paypal_order_id"],
+            "paypal_status": result["status"],
+            "payment_status": plan["payment_status"],
+            "approval_url": result["approval_url"],
+            "message": "Open the PayPal URL to review and approve your purchase.",
+        }
+    except PolicyViolation as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PayPalError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
