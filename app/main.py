@@ -4,6 +4,9 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from app.ai_agent import parse_intent, AIUnavailableError
+from app.catalog import CATALOG
+
 from app.catalog import list_products
 from app.policy import PolicyViolation, validate_purchase
 
@@ -31,6 +34,8 @@ class PlanRequest(BaseModel):
 class ApprovalRequest(BaseModel):
     approved: bool
 
+class AgentRequest(BaseModel):
+    message: str = Field(min_length=10, max_length=1000)
 
 @app.get("/health")
 def health():
@@ -122,3 +127,53 @@ def get_plan(plan_id: str):
         raise HTTPException(status_code=404, detail="Plan not found.")
 
     return plan
+
+@app.post("/api/agent/recommend")
+def agent_recommend(request: AgentRequest):
+    try:
+        intent = parse_intent(request.message)
+    except AIUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if intent.clarification_needed or intent.budget_limit is None:
+        return {
+            "status": "needs_clarification",
+            "intent": intent.model_dump(mode="json"),
+            "question": (
+                intent.clarification_question
+                or "Please specify your maximum budget in USD."
+            ),
+            "recommendations": [],
+            "payment_status": "not_started",
+        }
+
+    candidates = []
+
+    for product in CATALOG.values():
+        if intent.category not in ("any", product["category"]):
+            continue
+
+        if product["price"] > intent.budget_limit:
+            continue
+
+        candidates.append({
+            "product_id": product["id"],
+            "name": product["name"],
+            "price": str(product["price"]),
+            "currency": "USD",
+            "sample_data": True,
+        })
+
+    # Deterministic ordering; the model does not invent rankings.
+    candidates.sort(key=lambda item: Decimal(item["price"]))
+
+    return {
+        "status": "recommendations_ready",
+        "intent": intent.model_dump(mode="json"),
+        "recommendations": candidates,
+        "next_step": (
+            "Choose a product and submit it to POST /api/plans. "
+            "User approval is required before checkout."
+        ),
+        "payment_status": "not_started",
+    }
