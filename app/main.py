@@ -9,6 +9,7 @@ from app.catalog import CATALOG
 
 from app.catalog import list_products
 from app.policy import PolicyViolation, validate_purchase
+from app.paypal_client import get_access_token, PayPalError
 
 app = FastAPI(
     title="NEXTPAY",
@@ -177,3 +178,22 @@ def agent_recommend(request: AgentRequest):
         ),
         "payment_status": "not_started",
     }
+@app.get("/api/paypal/test-auth")
+async def test_paypal_auth():
+    try:
+        token_data = await get_access_token()
+
+        return {
+            "success": True,
+            "message": "Successfully authenticated with PayPal Sandbox.",
+            "token_type": token_data["token_type"],
+            "expires_in": token_data["expires_in"],
+            "environment": "sandbox",
+        }
+
+    except PayPalError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=str(exc)
+        )    
+    
