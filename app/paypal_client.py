@@ -177,3 +177,29 @@ async def capture_paypal_order(order_id: str) -> dict:
         raise PayPalError(
             "Could not connect to PayPal while capturing payment."
         ) from exc
+async def get_paypal_order(order_id: str) -> dict:
+    token_data = await get_access_token()
+    base_url = _sandbox_base_url()
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{base_url}/v2/checkout/orders/{order_id}",
+                headers={
+                    "Authorization": f"Bearer {token_data['access_token']}",
+                    "Content-Type": "application/json",
+                },
+            )
+
+        response.raise_for_status()
+        return response.json()
+
+    except httpx.HTTPStatusError as exc:
+        raise PayPalError(
+            f"PayPal order lookup failed with HTTP {exc.response.status_code}."
+        ) from exc
+
+    except httpx.RequestError as exc:
+        raise PayPalError(
+            "Could not connect to PayPal while checking order status."
+        ) from exc
