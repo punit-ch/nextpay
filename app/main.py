@@ -1,13 +1,19 @@
 ﻿from decimal import Decimal
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.ai_agent import AIUnavailableError, parse_intent
 from app.catalog import CATALOG, list_products
+from app.paypal_client import (
+    PayPalError,
+    capture_paypal_order,
+    create_paypal_order,
+    get_access_token,
+)
 from app.policy import PolicyViolation, validate_purchase
-from app.paypal_client import PayPalError, create_paypal_order, get_access_token
 
 app = FastAPI(
     title="NEXTPAY",
@@ -16,6 +22,14 @@ app = FastAPI(
         "Milestone 1 uses sample catalogue data and no real payments."
     ),
     version="0.1.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 plans: dict[str, dict] = {}
@@ -100,7 +114,7 @@ def approve_plan(plan_id: str, request: ApprovalRequest):
         recalculated = validate_purchase(
             product_id=purchase["product_id"],
             quantity=purchase["quantity"],
-            budget_limit=Decimal(purchase["budget_limit"]),
+            budget_limit=Decimal(str(purchase["budget_limit"])),
         )
     except PolicyViolation as exc:
         plan["status"] = "blocked_by_policy"
@@ -234,6 +248,88 @@ async def create_plan_paypal_order(plan_id: str):
             "approval_url": result["approval_url"],
             "message": "Open the PayPal URL to review and approve your purchase.",
         }
+    except PolicyViolation as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PayPalError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/paypal/return")
+async def paypal_return(
+    token: str,
+    payer_id: str = Query(alias="PayerID"),
+):
+    plan = next(
+        (p for p in plans.values() if p.get("paypal_order_id") == token),
+        None,
+    )
+
+    if not plan:
+        raise HTTPException(
+            status_code=404,
+            detail="No matching NEXTPAY purchase plan found.",
+        )
+
+    if plan.get("payment_status") != "awaiting_paypal_approval":
+        raise HTTPException(
+            status_code=409,
+            detail="This payment is not awaiting PayPal approval.",
+        )
+
+    purchase = plan.get("purchase", {})
+
+    try:
+        validated = validate_purchase(
+            product_id=purchase["product_id"],
+            quantity=purchase["quantity"],
+            budget_limit=Decimal(str(purchase["budget_limit"])),
+        )
+
+        result = await capture_paypal_order(token)
+
+        if result.get("status") != "COMPLETED":
+            raise HTTPException(
+                status_code=502,
+                detail="PayPal has not confirmed a completed payment.",
+            )
+
+        capture = None
+        for unit in result.get("purchase_units", []):
+            for item in unit.get("payments", {}).get("captures", []):
+                if item.get("status") == "COMPLETED":
+                    capture = item
+                    break
+
+        if not capture:
+            raise HTTPException(
+                status_code=502,
+                detail="No completed capture was found in PayPal response.",
+            )
+
+        amount = capture.get("amount", {})
+        if (
+            amount.get("currency_code") != "USD"
+            or amount.get("value") != str(validated["total"])
+        ):
+            raise HTTPException(
+                status_code=502,
+                detail="Captured amount does not match the approved purchase.",
+            )
+
+        plan["payment_status"] = "completed"
+        plan["paypal_capture_id"] = capture["id"]
+
+        return {
+            "success": True,
+            "message": "PayPal payment successfully captured and verified.",
+            "plan_id": plan["plan_id"],
+            "paypal_order_id": token,
+            "paypal_capture_id": capture["id"],
+            "payment_status": "completed",
+            "amount": amount["value"],
+            "currency": amount["currency_code"],
+        }
+
     except PolicyViolation as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PayPalError as exc:

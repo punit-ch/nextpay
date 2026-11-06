@@ -57,12 +57,10 @@ async def get_access_token() -> dict:
 
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code
-
         if status in (401, 403):
             raise PayPalError(
                 "PayPal rejected the credentials. Check your Sandbox Client ID and Secret."
             ) from exc
-
         raise PayPalError(f"PayPal authentication failed with HTTP {status}.") from exc
 
     except httpx.RequestError as exc:
@@ -141,16 +139,11 @@ async def create_paypal_order(
 
     except httpx.RequestError as exc:
         raise PayPalError("Could not connect to PayPal while creating the order.") from exc
-    
+
+
 async def capture_paypal_order(order_id: str) -> dict:
     token_data = await get_access_token()
-
-    base_url = os.getenv(
-        "PAYPAL_BASE_URL",
-        "https://api-m.sandbox.paypal.com"
-    ).rstrip("/")
-
-    # Stable request ID makes retries safer.
+    base_url = _sandbox_base_url()
     request_id = str(
         uuid.uuid5(uuid.NAMESPACE_URL, f"nxtpay-capture:{order_id}")
     )
