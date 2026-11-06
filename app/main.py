@@ -1,12 +1,16 @@
-﻿from decimal import Decimal
+﻿
+from decimal import Decimal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from app.ai_agent import AIUnavailableError, parse_intent
 from app.catalog import CATALOG, list_products
+from app.database import Base, SessionLocal, engine
+from app.models import PurchasePlan
 from app.paypal_client import (
     PayPalError,
     capture_paypal_order,
@@ -15,24 +19,27 @@ from app.paypal_client import (
 )
 from app.policy import PolicyViolation, validate_purchase
 
+
+# Create database tables if they do not already exist.
+Base.metadata.create_all(bind=engine)
+
+
 app = FastAPI(
     title="NEXTPAY",
-    description=(
-        "AI-assisted commerce agent. "
-        "Milestone 1 uses sample catalogue data and no real payments."
-    ),
-    version="0.1.0",
+    description="AI-assisted commerce agent with PayPal Sandbox checkout.",
+    version="0.2.0",
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-plans: dict[str, dict] = {}
 
 
 class PlanRequest(BaseModel):
@@ -50,9 +57,34 @@ class AgentRequest(BaseModel):
     message: str = Field(min_length=10, max_length=1000)
 
 
+def serialize_plan(plan: PurchasePlan) -> dict:
+    """Convert a database plan into the existing API response structure."""
+    return {
+        "plan_id": plan.plan_id,
+        "goal": plan.goal,
+        "purchase": {
+            "product_id": plan.product_id,
+            "product_name": plan.product_name,
+            "quantity": plan.quantity,
+            "unit_price": plan.unit_price,
+            "total": plan.total,
+            "budget_limit": plan.budget_limit,
+        },
+        "status": plan.status,
+        "payment_status": plan.payment_status,
+        "paypal_order_id": plan.paypal_order_id,
+        "paypal_capture_id": plan.paypal_capture_id,
+    }
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "project": "NEXTPAY", "milestone": 1}
+    return {
+        "status": "ok",
+        "project": "NEXTPAY",
+        "milestone": 6,
+        "database": "sqlite",
+    }
 
 
 @app.get("/api/catalog")
@@ -74,69 +106,93 @@ def create_plan(request: PlanRequest):
     except PolicyViolation as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    plan_id = str(uuid4())
-    plan = {
-        "plan_id": plan_id,
-        "goal": request.goal,
-        "purchase": purchase,
-        "status": "awaiting_user_approval",
-        "payment_status": "not_started",
-        "message": (
+    plan = PurchasePlan(
+        plan_id=str(uuid4()),
+        goal=request.goal,
+        product_id=purchase["product_id"],
+        product_name=purchase["product_name"],
+        quantity=request.quantity,
+        unit_price=str(purchase["unit_price"]),
+        total=str(purchase["total"]),
+        budget_limit=str(request.budget_limit),
+        status="awaiting_user_approval",
+        payment_status="not_started",
+    )
+
+    with SessionLocal() as db:
+        db.add(plan)
+        db.commit()
+        db.refresh(plan)
+
+        response = serialize_plan(plan)
+        response["message"] = (
             "Review the item, quantity, and total. "
             "No payment has been created."
-        ),
-    }
-    plans[plan_id] = plan
-    return plan
+        )
+        return response
 
 
 @app.post("/api/plans/{plan_id}/approval")
 def approve_plan(plan_id: str, request: ApprovalRequest):
-    plan = plans.get(plan_id)
+    with SessionLocal() as db:
+        plan = db.get(PurchasePlan, plan_id)
 
-    if plan is None:
-        raise HTTPException(status_code=404, detail="Plan not found.")
+        if plan is None:
+            raise HTTPException(status_code=404, detail="Plan not found.")
 
-    if plan["status"] != "awaiting_user_approval":
-        raise HTTPException(
-            status_code=409,
-            detail="This plan is no longer awaiting approval.",
+        if plan.status != "awaiting_user_approval":
+            raise HTTPException(
+                status_code=409,
+                detail="This plan is no longer awaiting approval.",
+            )
+
+        if not request.approved:
+            plan.status = "rejected_by_user"
+            db.commit()
+
+            response = serialize_plan(plan)
+            response["message"] = "The user rejected this purchase."
+            return response
+
+        try:
+            recalculated = validate_purchase(
+                product_id=plan.product_id,
+                quantity=plan.quantity,
+                budget_limit=Decimal(plan.budget_limit),
+            )
+        except PolicyViolation as exc:
+            plan.status = "blocked_by_policy"
+            db.commit()
+            raise HTTPException(
+                status_code=422,
+                detail=str(exc),
+            ) from exc
+
+        plan.product_name = recalculated["product_name"]
+        plan.unit_price = str(recalculated["unit_price"])
+        plan.total = str(recalculated["total"])
+        plan.status = "approved_by_user"
+
+        db.commit()
+        db.refresh(plan)
+
+        response = serialize_plan(plan)
+        response["message"] = (
+            "User approval recorded. "
+            "PayPal checkout can now be started."
         )
-
-    if not request.approved:
-        plan["status"] = "rejected_by_user"
-        plan["message"] = "The user rejected this purchase."
-        return plan
-
-    purchase = plan["purchase"]
-
-    try:
-        recalculated = validate_purchase(
-            product_id=purchase["product_id"],
-            quantity=purchase["quantity"],
-            budget_limit=Decimal(str(purchase["budget_limit"])),
-        )
-    except PolicyViolation as exc:
-        plan["status"] = "blocked_by_policy"
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    plan["purchase"] = recalculated
-    plan["status"] = "approved_by_user"
-    plan["message"] = (
-        "User approval recorded. "
-        "PayPal checkout is not implemented in Milestone 1."
-    )
-    return plan
+        return response
 
 
 @app.get("/api/plans/{plan_id}")
 def get_plan(plan_id: str):
-    plan = plans.get(plan_id)
+    with SessionLocal() as db:
+        plan = db.get(PurchasePlan, plan_id)
 
-    if plan is None:
-        raise HTTPException(status_code=404, detail="Plan not found.")
+        if plan is None:
+            raise HTTPException(status_code=404, detail="Plan not found.")
 
-    return plan
+        return serialize_plan(plan)
 
 
 @app.post("/api/agent/recommend")
@@ -159,9 +215,11 @@ def agent_recommend(request: AgentRequest):
         }
 
     candidates = []
+
     for product in CATALOG.values():
         if intent.category not in ("any", product["category"]):
             continue
+
         if product["price"] > intent.budget_limit:
             continue
 
@@ -176,6 +234,7 @@ def agent_recommend(request: AgentRequest):
         )
 
     candidates.sort(key=lambda item: Decimal(item["price"]))
+
     return {
         "status": "recommendations_ready",
         "intent": intent.model_dump(mode="json"),
@@ -205,53 +264,58 @@ async def test_paypal_auth():
 
 @app.post("/api/plans/{plan_id}/paypal/create-order")
 async def create_plan_paypal_order(plan_id: str):
-    plan = plans.get(plan_id)
+    with SessionLocal() as db:
+        plan = db.get(PurchasePlan, plan_id)
 
-    if not plan:
-        raise HTTPException(status_code=404, detail="Plan not found.")
+        if plan is None:
+            raise HTTPException(status_code=404, detail="Plan not found.")
 
-    if plan.get("status") != "approved_by_user":
-        raise HTTPException(
-            status_code=403,
-            detail="User approval is required before creating a PayPal order.",
-        )
+        if plan.status != "approved_by_user":
+            raise HTTPException(
+                status_code=403,
+                detail="User approval is required before creating a PayPal order.",
+            )
 
-    if plan.get("payment_status") != "not_started":
-        raise HTTPException(
-            status_code=409,
-            detail="Payment has already been started or completed.",
-        )
+        if plan.payment_status != "not_started":
+            raise HTTPException(
+                status_code=409,
+                detail="Payment has already been started or completed.",
+            )
 
-    try:
-        purchase = plan.get("purchase", {})
-        validated = validate_purchase(
-            product_id=purchase["product_id"],
-            quantity=purchase["quantity"],
-            budget_limit=Decimal(str(purchase["budget_limit"])),
-        )
+        try:
+            validated = validate_purchase(
+                product_id=plan.product_id,
+                quantity=plan.quantity,
+                budget_limit=Decimal(plan.budget_limit),
+            )
 
-        result = await create_paypal_order(
-            amount=str(validated["total"]),
-            description=validated["product_name"],
-            plan_id=plan_id,
-        )
+            result = await create_paypal_order(
+                amount=str(validated["total"]),
+                description=validated["product_name"],
+                plan_id=plan_id,
+            )
 
-        plan["paypal_order_id"] = result["paypal_order_id"]
-        plan["payment_status"] = "awaiting_paypal_approval"
+            plan.paypal_order_id = result["paypal_order_id"]
+            plan.payment_status = "awaiting_paypal_approval"
 
-        return {
-            "success": True,
-            "plan_id": plan_id,
-            "paypal_order_id": result["paypal_order_id"],
-            "paypal_status": result["status"],
-            "payment_status": plan["payment_status"],
-            "approval_url": result["approval_url"],
-            "message": "Open the PayPal URL to review and approve your purchase.",
-        }
-    except PolicyViolation as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except PayPalError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+            db.commit()
+
+            return {
+                "success": True,
+                "plan_id": plan_id,
+                "paypal_order_id": result["paypal_order_id"],
+                "paypal_status": result["status"],
+                "payment_status": plan.payment_status,
+                "approval_url": result["approval_url"],
+                "message": (
+                    "Open the PayPal URL to review and approve your purchase."
+                ),
+            }
+
+        except PolicyViolation as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except PayPalError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/api/paypal/return")
@@ -259,78 +323,115 @@ async def paypal_return(
     token: str,
     payer_id: str = Query(alias="PayerID"),
 ):
-    plan = next(
-        (p for p in plans.values() if p.get("paypal_order_id") == token),
-        None,
-    )
+    frontend_url = "http://localhost:5173"
 
-    if not plan:
-        raise HTTPException(
-            status_code=404,
-            detail="No matching NEXTPAY purchase plan found.",
+    with SessionLocal() as db:
+        plan = (
+            db.query(PurchasePlan)
+            .filter(PurchasePlan.paypal_order_id == token)
+            .first()
         )
 
-    if plan.get("payment_status") != "awaiting_paypal_approval":
-        raise HTTPException(
-            status_code=409,
-            detail="This payment is not awaiting PayPal approval.",
-        )
-
-    purchase = plan.get("purchase", {})
-
-    try:
-        validated = validate_purchase(
-            product_id=purchase["product_id"],
-            quantity=purchase["quantity"],
-            budget_limit=Decimal(str(purchase["budget_limit"])),
-        )
-
-        result = await capture_paypal_order(token)
-
-        if result.get("status") != "COMPLETED":
-            raise HTTPException(
-                status_code=502,
-                detail="PayPal has not confirmed a completed payment.",
+        if plan is None:
+            return RedirectResponse(
+                f"{frontend_url}/payment/failure?reason=plan_not_found",
+                status_code=303,
             )
 
-        capture = None
-        for unit in result.get("purchase_units", []):
-            for item in unit.get("payments", {}).get("captures", []):
-                if item.get("status") == "COMPLETED":
-                    capture = item
+        plan_id = plan.plan_id
+
+        if plan.payment_status == "completed":
+            return RedirectResponse(
+                f"{frontend_url}/payment/success?plan_id={plan_id}",
+                status_code=303,
+            )
+
+        if plan.payment_status != "awaiting_paypal_approval":
+            return RedirectResponse(
+                f"{frontend_url}/payment/failure?plan_id={plan_id}&reason=invalid_status",
+                status_code=303,
+            )
+
+        try:
+            validated = validate_purchase(
+                product_id=plan.product_id,
+                quantity=plan.quantity,
+                budget_limit=Decimal(plan.budget_limit),
+            )
+
+            result = await capture_paypal_order(token)
+
+            if result.get("status") != "COMPLETED":
+                plan.payment_status = "review_required"
+                db.commit()
+                return RedirectResponse(
+                    f"{frontend_url}/payment/failure?plan_id={plan_id}&reason=capture_not_completed",
+                    status_code=303,
+                )
+
+            capture = None
+
+            for unit in result.get("purchase_units", []):
+                for item in unit.get("payments", {}).get("captures", []):
+                    if item.get("status") == "COMPLETED":
+                        capture = item
+                        break
+                if capture:
                     break
 
-        if not capture:
-            raise HTTPException(
-                status_code=502,
-                detail="No completed capture was found in PayPal response.",
+            if not capture:
+                plan.payment_status = "review_required"
+                db.commit()
+                return RedirectResponse(
+                    f"{frontend_url}/payment/failure?plan_id={plan_id}&reason=capture_missing",
+                    status_code=303,
+                )
+
+            amount = capture.get("amount", {})
+
+            if (
+                amount.get("currency_code") != "USD"
+                or amount.get("value") != str(validated["total"])
+            ):
+                plan.payment_status = "review_required"
+                db.commit()
+                return RedirectResponse(
+                    f"{frontend_url}/payment/failure?plan_id={plan_id}&reason=amount_mismatch",
+                    status_code=303,
+                )
+
+            plan.payment_status = "completed"
+            plan.paypal_capture_id = capture["id"]
+
+            db.commit()
+
+            return RedirectResponse(
+                f"{frontend_url}/payment/success?plan_id={plan_id}",
+                status_code=303,
             )
 
-        amount = capture.get("amount", {})
-        if (
-            amount.get("currency_code") != "USD"
-            or amount.get("value") != str(validated["total"])
-        ):
-            raise HTTPException(
-                status_code=502,
-                detail="Captured amount does not match the approved purchase.",
+        except (PayPalError, PolicyViolation, KeyError):
+            plan.payment_status = "review_required"
+            db.commit()
+
+            return RedirectResponse(
+                f"{frontend_url}/payment/failure?plan_id={plan_id}&reason=verification_error",
+                status_code=303,
             )
 
-        plan["payment_status"] = "completed"
-        plan["paypal_capture_id"] = capture["id"]
 
-        return {
-            "success": True,
-            "message": "PayPal payment successfully captured and verified.",
-            "plan_id": plan["plan_id"],
-            "paypal_order_id": token,
-            "paypal_capture_id": capture["id"],
-            "payment_status": "completed",
-            "amount": amount["value"],
-            "currency": amount["currency_code"],
-        }
+@app.get("/api/paypal/cancel")
+async def paypal_cancel(plan_id: str):
+    frontend_url = "http://localhost:5173"
 
-    except PolicyViolation as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except PayPalError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    with SessionLocal() as db:
+        plan = db.get(PurchasePlan, plan_id)
+
+        if plan and plan.payment_status == "awaiting_paypal_approval":
+            plan.payment_status = "cancelled_by_buyer"
+            db.commit()
+
+    return RedirectResponse(
+        f"{frontend_url}/payment/cancelled?plan_id={plan_id}",
+        status_code=303,
+    )

@@ -6,6 +6,7 @@ PayPal + AI hackathon.
 ## Current milestone
 
 Milestone 1 provides:
+
 - A sample product catalogue
 - Server-side price and budget validation
 - Purchase-plan creation

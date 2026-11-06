@@ -91,12 +91,17 @@ async def create_paypal_order(
             }
         ],
         "application_context": {
-            "brand_name": "NEXTPAY",
-            "user_action": "PAY_NOW",
-            "shipping_preference": "NO_SHIPPING",
-            "return_url": "http://127.0.0.1:8000/api/paypal/return",
-            "cancel_url": "http://127.0.0.1:8000/api/paypal/cancel",
-        },
+    "brand_name": "NEXTPAY",
+    "user_action": "PAY_NOW",
+    "shipping_preference": "NO_SHIPPING",
+    "return_url": (
+        "http://127.0.0.1:8000/api/paypal/return"
+    ),
+    "cancel_url": (
+        f"http://127.0.0.1:8000/api/paypal/cancel"
+        f"?plan_id={plan_id}"
+    ),
+},
     }
 
     try:

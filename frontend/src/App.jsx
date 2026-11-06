@@ -1,5 +1,4 @@
-
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertCircle,
   ArrowRight,
@@ -26,6 +25,56 @@ function App() {
   const [plan, setPlan] = useState(null);
   const [purchaseLoading, setPurchaseLoading] = useState(false);
   const [purchaseError, setPurchaseError] = useState("");
+  const paymentPath = window.location.pathname;
+  const paymentParams = new URLSearchParams(window.location.search);
+  const paymentPlanId = paymentParams.get("plan_id");
+
+  const [paymentPlan, setPaymentPlan] = useState(null);
+  const [paymentLoading, setPaymentLoading] = useState(
+    paymentPath === "/payment/success",
+  );
+  const [paymentError, setPaymentError] = useState("");
+
+  useEffect(() => {
+    if (paymentPath !== "/payment/success" || !paymentPlanId) {
+      setPaymentLoading(false);
+      return;
+    }
+
+    let active = true;
+
+    async function loadReceipt() {
+      try {
+        const response = await fetch(
+          `${API_URL}/api/plans/${encodeURIComponent(paymentPlanId)}`,
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.detail || "Could not load payment receipt.");
+        }
+
+        const planData = data.plan || data;
+
+        if (planData.payment_status !== "completed") {
+          throw new Error("Payment completion could not be verified.");
+        }
+
+        if (active) setPaymentPlan(planData);
+      } catch (err) {
+        if (active) setPaymentError(err.message);
+      } finally {
+        if (active) setPaymentLoading(false);
+      }
+    }
+
+    loadReceipt();
+
+    return () => {
+      active = false;
+    };
+  }, [paymentPath, paymentPlanId]);
 
   async function createPurchasePlan() {
     if (!selectedProduct) {
@@ -101,9 +150,13 @@ function App() {
       }
 
       setResult(data);
-      setBudgetLimit(data.intent?.budget_limit ? String(data.intent.budget_limit) : "");
+      setBudgetLimit(
+        data.intent?.budget_limit ? String(data.intent.budget_limit) : "",
+      );
     } catch (err) {
-      setError(err.message || "Could not connect to NEXTPAY. Check your backend.");
+      setError(
+        err.message || "Could not connect to NEXTPAY. Check your backend.",
+      );
     } finally {
       setLoading(false);
     }
@@ -155,14 +208,22 @@ function App() {
   }
 
   const recommendations = result?.recommendations || [];
-  const needsClarification = result?.status === "needs_clarification" || result?.needs_clarification;
+  const needsClarification =
+    result?.status === "needs_clarification" || result?.needs_clarification;
 
   function productName(product) {
-    return product.product_name || product.name || product.title || "Recommended product";
+    return (
+      product.product_name ||
+      product.name ||
+      product.title ||
+      "Recommended product"
+    );
   }
 
   function productPrice(product) {
-    return product.price ?? product.unit_price ?? product.displayed_price ?? "—";
+    return (
+      product.price ?? product.unit_price ?? product.displayed_price ?? "—"
+    );
   }
 
   function productIcon(product) {
@@ -170,6 +231,137 @@ function App() {
     if (category === "audio") return Headphones;
     if (category === "workspace") return Monitor;
     return Package;
+  }
+  if (paymentPath === "/payment/success") {
+    if (paymentLoading) {
+      return (
+        <main className="flex min-h-screen items-center justify-center bg-[#09090f] text-white">
+          <p className="text-slate-400">Verifying your payment receipt...</p>
+        </main>
+      );
+    }
+
+    if (paymentError || !paymentPlan) {
+      return (
+        <main className="flex min-h-screen items-center justify-center bg-[#09090f] px-5 text-white">
+          <div className="max-w-md rounded-3xl border border-amber-500/20 bg-[#11111b] p-8 text-center">
+            <h1 className="text-2xl font-bold text-amber-300">
+              Receipt unavailable
+            </h1>
+            <p className="mt-4 text-sm text-slate-400">
+              {paymentError || "We could not verify this transaction."}
+            </p>
+            <a
+              href="/"
+              className="mt-6 inline-block rounded-xl bg-violet-600 px-6 py-3 font-semibold"
+            >
+              Return to NEXTPAY
+            </a>
+          </div>
+        </main>
+      );
+    }
+
+    const purchase = paymentPlan.purchase || {};
+
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#09090f] px-5 py-12 text-white">
+        <div className="w-full max-w-lg rounded-3xl border border-emerald-500/20 bg-[#11111b] p-8">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-400">
+            <CheckCircle2 size={34} />
+          </div>
+
+          <h1 className="mt-6 text-center text-3xl font-bold">
+            Payment successful
+          </h1>
+
+          <p className="mt-3 text-center text-slate-400">
+            Your PayPal Sandbox payment was captured and verified.
+          </p>
+
+          <div className="mt-8 space-y-4 rounded-2xl bg-[#09090f] p-5">
+            <div className="flex justify-between gap-4">
+              <span className="text-slate-500">Product</span>
+              <span className="text-right">
+                {purchase.product_name || "NEXTPAY purchase"}
+              </span>
+            </div>
+
+            <div className="flex justify-between">
+              <span className="text-slate-500">Quantity</span>
+              <span>{purchase.quantity ?? "—"}</span>
+            </div>
+
+            <div className="flex justify-between">
+              <span className="text-slate-500">Amount</span>
+              <span className="font-bold text-emerald-300">
+                ${purchase.total ?? "—"} USD
+              </span>
+            </div>
+
+            <div className="border-t border-white/10 pt-4">
+              <p className="text-xs text-slate-500">PayPal capture ID</p>
+              <p className="mt-1 break-all text-xs">
+                {paymentPlan.paypal_capture_id || "Unavailable"}
+              </p>
+            </div>
+
+            <div className="flex justify-between">
+              <span className="text-slate-500">Payment status</span>
+              <span className="text-emerald-400">COMPLETED</span>
+            </div>
+          </div>
+
+          <a
+            href="/"
+            className="mt-7 block rounded-xl bg-violet-600 px-5 py-4 text-center font-semibold hover:bg-violet-500"
+          >
+            Continue shopping
+          </a>
+        </div>
+      </main>
+    );
+  }
+
+  if (
+    paymentPath === "/payment/failure" ||
+    paymentPath === "/payment/cancelled"
+  ) {
+    const cancelled = paymentPath === "/payment/cancelled";
+    const reason = paymentParams.get("reason");
+
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#09090f] px-5 text-white">
+        <div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#11111b] p-8 text-center">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-amber-500/10 text-amber-300">
+            {cancelled ? <AlertCircle size={32} /> : <AlertCircle size={32} />}
+          </div>
+
+          <h1 className="mt-6 text-2xl font-bold">
+            {cancelled ? "Checkout cancelled" : "Payment not verified"}
+          </h1>
+
+          <p className="mt-3 text-sm leading-6 text-slate-400">
+            {cancelled
+              ? "You cancelled the PayPal checkout. No successful payment has been recorded by NEXTPAY."
+              : "NEXTPAY could not verify a completed payment. Please check your transaction status before trying again."}
+          </p>
+
+          {reason && (
+            <p className="mt-4 break-all text-xs text-slate-600">
+              Reference: {reason}
+            </p>
+          )}
+
+          <a
+            href="/"
+            className="mt-7 block rounded-xl bg-violet-600 px-5 py-4 font-semibold hover:bg-violet-500"
+          >
+            Return to NEXTPAY
+          </a>
+        </div>
+      </main>
+    );
   }
 
   return (
@@ -213,8 +405,9 @@ function App() {
           </h1>
 
           <p className="mx-auto mt-6 max-w-2xl text-base leading-7 text-slate-400 sm:text-lg">
-            Tell NEXTPAY what you need. Our AI understands your intent, finds suitable products
-            and checks your budget before you approve anything.
+            Tell NEXTPAY what you need. Our AI understands your intent, finds
+            suitable products and checks your budget before you approve
+            anything.
           </p>
         </div>
 
@@ -226,12 +419,17 @@ function App() {
               </div>
               <div>
                 <h2 className="font-semibold">What are you looking for?</h2>
-                <p className="text-sm text-slate-500">Describe your shopping goal naturally.</p>
+                <p className="text-sm text-slate-500">
+                  Describe your shopping goal naturally.
+                </p>
               </div>
             </div>
 
             <form onSubmit={getRecommendations}>
-              <label htmlFor="shopping-message" className="mb-2 block text-sm font-medium text-slate-300">
+              <label
+                htmlFor="shopping-message"
+                className="mb-2 block text-sm font-medium text-slate-300"
+              >
                 Your shopping request
               </label>
 
@@ -285,7 +483,9 @@ function App() {
                 <h2 className="text-xl font-semibold">AI analysis complete</h2>
               </div>
 
-              {result.message && <p className="text-sm text-slate-400">{result.message}</p>}
+              {result.message && (
+                <p className="text-sm text-slate-400">{result.message}</p>
+              )}
 
               {result.intent && (
                 <div className="rounded-2xl border border-white/10 bg-[#11111b] p-5">
@@ -293,7 +493,8 @@ function App() {
                     Understood shopping intent
                   </p>
                   <p className="text-sm leading-7 text-slate-300">
-                    {result.intent.summary || "Your shopping preferences have been analysed."}
+                    {result.intent.summary ||
+                      "Your shopping preferences have been analysed."}
                   </p>
                   {result.intent.budget_limit && (
                     <p className="mt-3 flex items-center gap-2 text-sm text-slate-400">
@@ -314,14 +515,20 @@ function App() {
 
               {!needsClarification && recommendations.length > 0 ? (
                 <div>
-                  <h3 className="mb-4 text-lg font-semibold">Recommended products</h3>
+                  <h3 className="mb-4 text-lg font-semibold">
+                    Recommended products
+                  </h3>
                   <div className="grid gap-4 sm:grid-cols-2">
                     {recommendations.map((product, index) => {
                       const Icon = productIcon(product);
-                      const isSelected = selectedProduct?.product_id === product.product_id;
+                      const isSelected =
+                        selectedProduct?.product_id === product.product_id;
 
                       return (
-                        <div key={product.product_id || index} className="space-y-4">
+                        <div
+                          key={product.product_id || index}
+                          className="space-y-4"
+                        >
                           <article
                             onClick={() => {
                               setSelectedProduct(product);
@@ -337,7 +544,9 @@ function App() {
                             <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-xl bg-violet-500/10 text-violet-300">
                               <Icon size={23} />
                             </div>
-                            <h4 className="font-semibold">{productName(product)}</h4>
+                            <h4 className="font-semibold">
+                              {productName(product)}
+                            </h4>
                             <p className="mt-2 text-xl font-bold text-violet-300">
                               ${productPrice(product)}
                             </p>
@@ -345,18 +554,26 @@ function App() {
                               Sample catalogue product · Not yet purchased
                             </p>
                             <p className="mt-4 text-sm font-medium text-violet-300">
-                              {isSelected ? "✓ Selected" : "Select this product →"}
+                              {isSelected
+                                ? "✓ Selected"
+                                : "Select this product →"}
                             </p>
                           </article>
 
                           {isSelected && (
                             <section className="rounded-2xl border border-violet-500/30 bg-[#11111b] p-6">
-                              <h3 className="text-lg font-semibold">Review your purchase</h3>
+                              <h3 className="text-lg font-semibold">
+                                Review your purchase
+                              </h3>
 
                               <div className="mt-5 flex justify-between gap-4">
                                 <div>
-                                  <p className="font-medium">{productName(selectedProduct)}</p>
-                                  <p className="mt-1 text-sm text-slate-500">Quantity: 1</p>
+                                  <p className="font-medium">
+                                    {productName(selectedProduct)}
+                                  </p>
+                                  <p className="mt-1 text-sm text-slate-500">
+                                    Quantity: 1
+                                  </p>
                                 </div>
 
                                 <p className="font-bold text-violet-300">
@@ -373,12 +590,16 @@ function App() {
                                 min="0.01"
                                 step="0.01"
                                 value={budgetLimit}
-                                onChange={(event) => setBudgetLimit(event.target.value)}
+                                onChange={(event) =>
+                                  setBudgetLimit(event.target.value)
+                                }
                                 className="mt-2 w-full rounded-xl border border-white/10 bg-[#09090f] p-3 text-white outline-none focus:border-violet-500"
                               />
 
                               {purchaseError && (
-                                <p className="mt-4 text-sm text-red-400">{purchaseError}</p>
+                                <p className="mt-4 text-sm text-red-400">
+                                  {purchaseError}
+                                </p>
                               )}
 
                               {!plan ? (
@@ -387,17 +608,24 @@ function App() {
                                   disabled={purchaseLoading}
                                   className="mt-5 w-full rounded-xl bg-violet-600 p-4 font-semibold hover:bg-violet-500 disabled:opacity-50"
                                 >
-                                  {purchaseLoading ? "Creating plan..." : "Review purchase"}
+                                  {purchaseLoading
+                                    ? "Creating plan..."
+                                    : "Review purchase"}
                                 </button>
                               ) : (
                                 <div className="mt-5 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
-                                  <p className="font-medium text-emerald-300">Purchase plan created</p>
-
-                                  <p className="mt-2 text-sm text-slate-400">
-                                    Server-validated total: ${plan.purchase?.total ?? "See plan details"}
+                                  <p className="font-medium text-emerald-300">
+                                    Purchase plan created
                                   </p>
 
-                                  <p className="mt-2 text-xs text-slate-500">Plan ID: {plan.plan_id}</p>
+                                  <p className="mt-2 text-sm text-slate-400">
+                                    Server-validated total: $
+                                    {plan.purchase?.total ?? "See plan details"}
+                                  </p>
+
+                                  <p className="mt-2 text-xs text-slate-500">
+                                    Plan ID: {plan.plan_id}
+                                  </p>
                                   <p className="mt-3 text-sm text-slate-300">
                                     No purchase has been approved yet.
                                   </p>
@@ -423,7 +651,8 @@ function App() {
               ) : (
                 !needsClarification && (
                   <div className="rounded-2xl border border-white/10 bg-[#11111b] p-5 text-sm text-slate-400">
-                    No matching products were found. Try adjusting your budget or shopping preferences.
+                    No matching products were found. Try adjusting your budget
+                    or shopping preferences.
                   </div>
                 )
               )}
@@ -437,29 +666,39 @@ function App() {
         </div>
 
         <section id="how-it-works" className="mx-auto mt-24 max-w-5xl">
-          <h2 className="text-center text-2xl font-bold">Commerce with control</h2>
+          <h2 className="text-center text-2xl font-bold">
+            Commerce with control
+          </h2>
           <div className="mt-9 grid gap-4 sm:grid-cols-3">
             {[
               {
                 icon: Sparkles,
                 title: "Understand",
-                description: "AI converts your natural-language request into structured shopping intent.",
+                description:
+                  "AI converts your natural-language request into structured shopping intent.",
               },
               {
                 icon: Wallet,
                 title: "Validate",
-                description: "Server-side rules check product prices, quantity and your budget.",
+                description:
+                  "Server-side rules check product prices, quantity and your budget.",
               },
               {
                 icon: ShieldCheck,
                 title: "Approve",
-                description: "You stay in control. Payment requires your explicit approval.",
+                description:
+                  "You stay in control. Payment requires your explicit approval.",
               },
             ].map((item) => (
-              <div key={item.title} className="rounded-2xl border border-white/10 bg-[#11111b] p-6">
+              <div
+                key={item.title}
+                className="rounded-2xl border border-white/10 bg-[#11111b] p-6"
+              >
                 <item.icon className="mb-4 text-violet-400" size={24} />
                 <h3 className="font-semibold">{item.title}</h3>
-                <p className="mt-2 text-sm leading-6 text-slate-500">{item.description}</p>
+                <p className="mt-2 text-sm leading-6 text-slate-500">
+                  {item.description}
+                </p>
               </div>
             ))}
           </div>

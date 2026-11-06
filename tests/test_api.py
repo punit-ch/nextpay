@@ -1,12 +1,9 @@
+
 from fastapi.testclient import TestClient
 
-from app.main import app, plans
+from app.main import app
 
 client = TestClient(app)
-
-
-def setup_function():
-    plans.clear()
 
 
 def make_plan(
@@ -29,7 +26,9 @@ def test_health_endpoint():
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["database"] == "sqlite"
 
 
 def test_catalog_is_marked_as_sample_data():
@@ -102,9 +101,10 @@ def test_approved_plan_does_not_claim_payment():
 
     assert approval.status_code == 200
     body = approval.json()
+
     assert body["status"] == "approved_by_user"
     assert body["payment_status"] == "not_started"
-    assert "not implemented" in body["message"].lower()
+    assert "checkout can now be started" in body["message"].lower()
 
 
 def test_plan_cannot_be_approved_twice():
@@ -115,6 +115,7 @@ def test_plan_cannot_be_approved_twice():
         f"/api/plans/{plan_id}/approval",
         json={"approved": True},
     )
+
     second = client.post(
         f"/api/plans/{plan_id}/approval",
         json={"approved": True},
@@ -128,3 +129,36 @@ def test_missing_plan_returns_404():
     response = client.get("/api/plans/not-a-real-plan")
 
     assert response.status_code == 404
+
+
+def test_plan_persists_in_database():
+    created = make_plan()
+    assert created.status_code == 201
+
+    plan_id = created.json()["plan_id"]
+
+    retrieved = client.get(f"/api/plans/{plan_id}")
+
+    assert retrieved.status_code == 200
+    body = retrieved.json()
+
+    assert body["plan_id"] == plan_id
+    assert body["purchase"]["product_id"] == "desk_lamp"
+    assert body["payment_status"] == "not_started"
+
+
+def test_approved_plan_is_persisted():
+    created = make_plan()
+    plan_id = created.json()["plan_id"]
+
+    approval = client.post(
+        f"/api/plans/{plan_id}/approval",
+        json={"approved": True},
+    )
+
+    assert approval.status_code == 200
+
+    retrieved = client.get(f"/api/plans/{plan_id}")
+
+    assert retrieved.status_code == 200
+    assert retrieved.json()["status"] == "approved_by_user"
