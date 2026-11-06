@@ -1,89 +1,80 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   ArrowRight,
   CheckCircle2,
   Headphones,
   LoaderCircle,
+  Minus,
   Monitor,
   Package,
+  Plus,
   ShieldCheck,
   ShoppingBag,
   Sparkles,
   Wallet,
 } from "lucide-react";
 
-const API_URL = "http://127.0.0.1:8000";
+import { apiRequest, isPayPalUrl } from "./api";
+import PaymentResult from "./PaymentResult.jsx";
 
-function App() {
+const MAX_QUANTITY = 5;
+
+// Display-only estimate in whole cents. The server calculates the real total.
+function estimateTotal(price, quantity) {
+  const cents = Math.round(Number.parseFloat(price) * 100);
+  if (!Number.isFinite(cents)) return null;
+  return ((cents * quantity) / 100).toFixed(2);
+}
+
+function ShoppingFlow() {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [budgetLimit, setBudgetLimit] = useState("");
+  const [quantity, setQuantity] = useState(1);
   const [plan, setPlan] = useState(null);
   const [purchaseLoading, setPurchaseLoading] = useState(false);
   const [purchaseError, setPurchaseError] = useState("");
-  const paymentPath = window.location.pathname;
-  const paymentParams = new URLSearchParams(window.location.search);
-  const paymentPlanId = paymentParams.get("plan_id");
 
-  const [paymentPlan, setPaymentPlan] = useState(null);
-  const [paymentLoading, setPaymentLoading] = useState(
-    paymentPath === "/payment/success",
-  );
-  const [paymentError, setPaymentError] = useState("");
+  // A ref blocks double clicks instantly; state alone updates one render late.
+  const busy = useRef(false);
 
   useEffect(() => {
-    if (paymentPath !== "/payment/success" || !paymentPlanId) {
-      setPaymentLoading(false);
-      return;
-    }
-
-    let active = true;
-
-    async function loadReceipt() {
-      try {
-        const response = await fetch(
-          `${API_URL}/api/plans/${encodeURIComponent(paymentPlanId)}`,
-        );
-
-        const data = await response.json();
-
-        if (!response.ok) {
-          throw new Error(data.detail || "Could not load payment receipt.");
-        }
-
-        const planData = data.plan || data;
-
-        if (planData.payment_status !== "completed") {
-          throw new Error("Payment completion could not be verified.");
-        }
-
-        if (active) setPaymentPlan(planData);
-      } catch (err) {
-        if (active) setPaymentError(err.message);
-      } finally {
-        if (active) setPaymentLoading(false);
+    // Returning with the browser back button restores this page from cache
+    // with the "Connecting to PayPal" state still on screen.
+    function reset(event) {
+      if (event.persisted) {
+        busy.current = false;
+        setPurchaseLoading(false);
       }
     }
+    window.addEventListener("pageshow", reset);
+    return () => window.removeEventListener("pageshow", reset);
+  }, []);
 
-    loadReceipt();
+  function chooseProduct(product) {
+    setSelectedProduct(product);
+    setQuantity(1);
+    setPlan(null);
+    setPurchaseError("");
+  }
 
-    return () => {
-      active = false;
-    };
-  }, [paymentPath, paymentPlanId]);
+  function changeQuantity(next) {
+    const clamped = Math.min(MAX_QUANTITY, Math.max(1, next));
+    setQuantity(clamped);
+    // A plan is tied to one quantity; changing it requires a new review.
+    setPlan(null);
+    setPurchaseError("");
+  }
 
   async function createPurchasePlan() {
-    if (!selectedProduct) {
-      setPurchaseError("Select a product first.");
-      return;
-    }
+    if (busy.current) return;
 
-    if (!selectedProduct.product_id) {
-      setPurchaseError("The recommendation has no valid product ID.");
+    if (!selectedProduct?.product_id) {
+      setPurchaseError("Select a product first.");
       return;
     }
 
@@ -92,43 +83,40 @@ function App() {
       return;
     }
 
+    busy.current = true;
     setPurchaseLoading(true);
     setPurchaseError("");
 
     try {
-      const response = await fetch(`${API_URL}/api/plans`, {
+      const data = await apiRequest("/api/plans", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           product_id: selectedProduct.product_id,
-          quantity: 1,
+          quantity,
           budget_limit: Number(budgetLimit),
           goal: message || "Shop for a recommended product.",
         }),
       });
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.detail || "Could not create purchase plan.");
-      }
-
       setPlan(data);
     } catch (err) {
       setPurchaseError(err.message);
     } finally {
+      busy.current = false;
       setPurchaseLoading(false);
     }
   }
 
   async function getRecommendations(event) {
     event.preventDefault();
+    if (busy.current || loading) return;
 
     if (message.trim().length < 10) {
       setError("Please describe what you want in at least 10 characters.");
       return;
     }
 
+    busy.current = true;
     setLoading(true);
     setError("");
     setSelectedProduct(null);
@@ -137,73 +125,70 @@ function App() {
     setResult(null);
 
     try {
-      const response = await fetch(`${API_URL}/api/agent/recommend`, {
+      const data = await apiRequest("/api/agent/recommend", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message }),
       });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.detail || "Unable to get recommendations.");
-      }
 
       setResult(data);
       setBudgetLimit(
         data.intent?.budget_limit ? String(data.intent.budget_limit) : "",
       );
     } catch (err) {
-      setError(
-        err.message || "Could not connect to NEXTPAY. Check your backend.",
-      );
+      setError(err.message);
     } finally {
+      busy.current = false;
       setLoading(false);
     }
   }
 
   async function approveAndCheckout() {
-    if (!plan?.plan_id) return;
+    if (busy.current || !plan?.plan_id) return;
 
+    busy.current = true;
     setPurchaseLoading(true);
     setPurchaseError("");
 
+    let redirecting = false;
+
     try {
-      const approvalResponse = await fetch(
-        `${API_URL}/api/plans/${plan.plan_id}/approval`,
-        {
+      let current = plan;
+
+      // Approval is recorded once. If PayPal order creation failed earlier,
+      // a retry must not approve again (the server would answer 409).
+      if (current.status === "awaiting_user_approval") {
+        current = await apiRequest(`/api/plans/${plan.plan_id}/approval`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ approved: true }),
-        },
-      );
-
-      const approvalData = await approvalResponse.json();
-
-      if (!approvalResponse.ok) {
-        throw new Error(approvalData.detail || "Purchase approval failed.");
+        });
+        setPlan(current);
       }
 
-      const orderResponse = await fetch(
-        `${API_URL}/api/plans/${plan.plan_id}/paypal/create-order`,
+      if (current.status !== "approved_by_user") {
+        throw new Error(
+          "This purchase plan can no longer be approved. Please review it again.",
+        );
+      }
+
+      const order = await apiRequest(
+        `/api/plans/${plan.plan_id}/paypal/create-order`,
         { method: "POST" },
       );
 
-      const orderData = await orderResponse.json();
-
-      if (!orderResponse.ok) {
-        throw new Error(orderData.detail || "Could not create PayPal order.");
+      if (!isPayPalUrl(order.approval_url)) {
+        throw new Error("PayPal did not return a valid checkout URL.");
       }
 
-      if (!orderData.approval_url) {
-        throw new Error("PayPal did not return a checkout URL.");
-      }
-
-      window.location.assign(orderData.approval_url);
+      // Keep the button disabled while the browser leaves for PayPal.
+      redirecting = true;
+      window.location.assign(order.approval_url);
     } catch (err) {
       setPurchaseError(err.message);
     } finally {
-      setPurchaseLoading(false);
+      if (!redirecting) {
+        busy.current = false;
+        setPurchaseLoading(false);
+      }
     }
   }
 
@@ -232,138 +217,6 @@ function App() {
     if (category === "workspace") return Monitor;
     return Package;
   }
-  if (paymentPath === "/payment/success") {
-    if (paymentLoading) {
-      return (
-        <main className="flex min-h-screen items-center justify-center bg-[#09090f] text-white">
-          <p className="text-slate-400">Verifying your payment receipt...</p>
-        </main>
-      );
-    }
-
-    if (paymentError || !paymentPlan) {
-      return (
-        <main className="flex min-h-screen items-center justify-center bg-[#09090f] px-5 text-white">
-          <div className="max-w-md rounded-3xl border border-amber-500/20 bg-[#11111b] p-8 text-center">
-            <h1 className="text-2xl font-bold text-amber-300">
-              Receipt unavailable
-            </h1>
-            <p className="mt-4 text-sm text-slate-400">
-              {paymentError || "We could not verify this transaction."}
-            </p>
-            <a
-              href="/"
-              className="mt-6 inline-block rounded-xl bg-violet-600 px-6 py-3 font-semibold"
-            >
-              Return to NEXTPAY
-            </a>
-          </div>
-        </main>
-      );
-    }
-
-    const purchase = paymentPlan.purchase || {};
-
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-[#09090f] px-5 py-12 text-white">
-        <div className="w-full max-w-lg rounded-3xl border border-emerald-500/20 bg-[#11111b] p-8">
-          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-400">
-            <CheckCircle2 size={34} />
-          </div>
-
-          <h1 className="mt-6 text-center text-3xl font-bold">
-            Payment successful
-          </h1>
-
-          <p className="mt-3 text-center text-slate-400">
-            Your PayPal Sandbox payment was captured and verified.
-          </p>
-
-          <div className="mt-8 space-y-4 rounded-2xl bg-[#09090f] p-5">
-            <div className="flex justify-between gap-4">
-              <span className="text-slate-500">Product</span>
-              <span className="text-right">
-                {purchase.product_name || "NEXTPAY purchase"}
-              </span>
-            </div>
-
-            <div className="flex justify-between">
-              <span className="text-slate-500">Quantity</span>
-              <span>{purchase.quantity ?? "—"}</span>
-            </div>
-
-            <div className="flex justify-between">
-              <span className="text-slate-500">Amount</span>
-              <span className="font-bold text-emerald-300">
-                ${purchase.total ?? "—"} USD
-              </span>
-            </div>
-
-            <div className="border-t border-white/10 pt-4">
-              <p className="text-xs text-slate-500">PayPal capture ID</p>
-              <p className="mt-1 break-all text-xs">
-                {paymentPlan.paypal_capture_id || "Unavailable"}
-              </p>
-            </div>
-
-            <div className="flex justify-between">
-              <span className="text-slate-500">Payment status</span>
-              <span className="text-emerald-400">COMPLETED</span>
-            </div>
-          </div>
-
-          <a
-            href="/"
-            className="mt-7 block rounded-xl bg-violet-600 px-5 py-4 text-center font-semibold hover:bg-violet-500"
-          >
-            Continue shopping
-          </a>
-        </div>
-      </main>
-    );
-  }
-
-  if (
-    paymentPath === "/payment/failure" ||
-    paymentPath === "/payment/cancelled"
-  ) {
-    const cancelled = paymentPath === "/payment/cancelled";
-    const reason = paymentParams.get("reason");
-
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-[#09090f] px-5 text-white">
-        <div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#11111b] p-8 text-center">
-          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-amber-500/10 text-amber-300">
-            {cancelled ? <AlertCircle size={32} /> : <AlertCircle size={32} />}
-          </div>
-
-          <h1 className="mt-6 text-2xl font-bold">
-            {cancelled ? "Checkout cancelled" : "Payment not verified"}
-          </h1>
-
-          <p className="mt-3 text-sm leading-6 text-slate-400">
-            {cancelled
-              ? "You cancelled the PayPal checkout. No successful payment has been recorded by NEXTPAY."
-              : "NEXTPAY could not verify a completed payment. Please check your transaction status before trying again."}
-          </p>
-
-          {reason && (
-            <p className="mt-4 break-all text-xs text-slate-600">
-              Reference: {reason}
-            </p>
-          )}
-
-          <a
-            href="/"
-            className="mt-7 block rounded-xl bg-violet-600 px-5 py-4 font-semibold hover:bg-violet-500"
-          >
-            Return to NEXTPAY
-          </a>
-        </div>
-      </main>
-    );
-  }
-
   return (
     <main className="min-h-screen bg-[#09090f] text-slate-100">
       <nav className="mx-auto flex max-w-7xl items-center justify-between px-6 py-6">
@@ -399,7 +252,7 @@ function App() {
 
           <h1 className="text-4xl font-bold leading-tight tracking-tight sm:text-6xl">
             Shopping that
-            <span className="block bg-gradient-to-r from-violet-400 to-fuchsia-400 bg-clip-text text-transparent">
+            <span className="block text-violet-400">
               thinks before you pay.
             </span>
           </h1>
@@ -469,7 +322,10 @@ function App() {
             </form>
 
             {error && (
-              <div className="mt-5 flex items-start gap-3 rounded-xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-300">
+              <div
+                role="alert"
+                className="mt-5 flex items-start gap-3 rounded-xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-300"
+              >
                 <AlertCircle size={19} className="mt-0.5 shrink-0" />
                 {error}
               </div>
@@ -530,10 +386,15 @@ function App() {
                           className="space-y-4"
                         >
                           <article
-                            onClick={() => {
-                              setSelectedProduct(product);
-                              setPlan(null);
-                              setPurchaseError("");
+                            role="button"
+                            tabIndex={0}
+                            aria-pressed={isSelected}
+                            onClick={() => chooseProduct(product)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                chooseProduct(product);
+                              }
                             }}
                             className={`cursor-pointer rounded-2xl border p-5 transition ${
                               isSelected
@@ -572,13 +433,51 @@ function App() {
                                     {productName(selectedProduct)}
                                   </p>
                                   <p className="mt-1 text-sm text-slate-500">
-                                    Quantity: 1
+                                    ${productPrice(selectedProduct)} each
                                   </p>
                                 </div>
 
                                 <p className="font-bold text-violet-300">
-                                  ${productPrice(selectedProduct)}
+                                  $
+                                  {estimateTotal(
+                                    productPrice(selectedProduct),
+                                    quantity,
+                                  ) ?? "—"}
                                 </p>
+                              </div>
+
+                              <div className="mt-5 flex items-center justify-between">
+                                <span className="text-sm text-slate-300">
+                                  Quantity (max {MAX_QUANTITY})
+                                </span>
+                                <div className="flex items-center gap-3">
+                                  <button
+                                    type="button"
+                                    aria-label="Decrease quantity"
+                                    onClick={() => changeQuantity(quantity - 1)}
+                                    disabled={purchaseLoading || quantity <= 1}
+                                    className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 hover:border-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    <Minus size={16} />
+                                  </button>
+                                  <span
+                                    className="w-6 text-center font-semibold"
+                                    aria-live="polite"
+                                  >
+                                    {quantity}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    aria-label="Increase quantity"
+                                    onClick={() => changeQuantity(quantity + 1)}
+                                    disabled={
+                                      purchaseLoading || quantity >= MAX_QUANTITY
+                                    }
+                                    className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 hover:border-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    <Plus size={16} />
+                                  </button>
+                                </div>
                               </div>
 
                               <label className="mt-6 block text-sm text-slate-300">
@@ -590,14 +489,16 @@ function App() {
                                 min="0.01"
                                 step="0.01"
                                 value={budgetLimit}
-                                onChange={(event) =>
-                                  setBudgetLimit(event.target.value)
-                                }
+                                disabled={purchaseLoading}
+                                onChange={(event) => {
+                                  setBudgetLimit(event.target.value);
+                                  setPlan(null);
+                                }}
                                 className="mt-2 w-full rounded-xl border border-white/10 bg-[#09090f] p-3 text-white outline-none focus:border-violet-500"
                               />
 
                               {purchaseError && (
-                                <p className="mt-4 text-sm text-red-400">
+                                <p role="alert" className="mt-4 text-sm text-red-400">
                                   {purchaseError}
                                 </p>
                               )}
@@ -608,9 +509,17 @@ function App() {
                                   disabled={purchaseLoading}
                                   className="mt-5 w-full rounded-xl bg-violet-600 p-4 font-semibold hover:bg-violet-500 disabled:opacity-50"
                                 >
-                                  {purchaseLoading
-                                    ? "Creating plan..."
-                                    : "Review purchase"}
+                                  {purchaseLoading ? (
+                                    <span className="flex items-center justify-center gap-2">
+                                      <LoaderCircle
+                                        className="animate-spin"
+                                        size={18}
+                                      />
+                                      Creating plan...
+                                    </span>
+                                  ) : (
+                                    "Review purchase"
+                                  )}
                                 </button>
                               ) : (
                                 <div className="mt-5 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
@@ -619,8 +528,13 @@ function App() {
                                   </p>
 
                                   <p className="mt-2 text-sm text-slate-400">
+                                    {plan.purchase?.quantity ?? quantity} ×{" "}
+                                    {plan.purchase?.product_name}
+                                  </p>
+                                  <p className="mt-1 text-sm text-slate-400">
                                     Server-validated total: $
-                                    {plan.purchase?.total ?? "See plan details"}
+                                    {plan.purchase?.total ?? "See plan details"}{" "}
+                                    USD
                                   </p>
 
                                   <p className="mt-2 text-xs text-slate-500">
@@ -629,15 +543,27 @@ function App() {
                                   <p className="mt-3 text-sm text-slate-300">
                                     No purchase has been approved yet.
                                   </p>
+                                  <p className="mt-1 text-xs text-slate-500">
+                                    PayPal Sandbox checkout: no real money
+                                    moves.
+                                  </p>
 
                                   <button
                                     onClick={approveAndCheckout}
                                     disabled={purchaseLoading}
                                     className="mt-4 w-full rounded-xl bg-emerald-600 p-4 font-semibold hover:bg-emerald-500 disabled:opacity-50"
                                   >
-                                    {purchaseLoading
-                                      ? "Connecting to PayPal..."
-                                      : "Approve purchase & continue to PayPal"}
+                                    {purchaseLoading ? (
+                                      <span className="flex items-center justify-center gap-2">
+                                        <LoaderCircle
+                                          className="animate-spin"
+                                          size={18}
+                                        />
+                                        Connecting to PayPal...
+                                      </span>
+                                    ) : (
+                                      "Approve purchase & continue to PayPal"
+                                    )}
                                   </button>
                                 </div>
                               )}
@@ -710,6 +636,16 @@ function App() {
       </section>
     </main>
   );
+}
+
+function App() {
+  const path = window.location.pathname;
+
+  if (path.startsWith("/payment/")) {
+    return <PaymentResult path={path} />;
+  }
+
+  return <ShoppingFlow />;
 }
 
 export default App;

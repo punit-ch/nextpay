@@ -2,7 +2,9 @@ import json
 import os
 from decimal import Decimal
 from typing import Literal
+import logging
 
+logger = logging.getLogger("nextpay.ai")
 import httpx
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError
@@ -77,7 +79,7 @@ budget_limit must be a number or null.
                 ],
                 "response_format": {"type": "json_object"},
                 "temperature": 0,
-                "max_tokens": 1200,
+                "max_tokens": 3000,
             },
             timeout=30,
         )
@@ -93,6 +95,12 @@ budget_limit must be a number or null.
             )
 
         choice = choices[0]
+        logger.info(
+        "OpenRouter response: model=%s finish_reason=%s usage=%s",
+         result.get("model"),
+         choice.get("finish_reason"),
+         result.get("usage"),
+          )
         message = choice.get("message") or {}
         content = message.get("content")
 

@@ -80,3 +80,31 @@ class Payment(Base):
         onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+
+
+class PaymentEvent(Base):
+    """Append-only audit trail of payment state changes and reconciliations.
+
+    Rows hold status codes and short reason codes only: never PayPal payloads,
+    payer details, tokens or credentials.
+    """
+
+    __tablename__ = "payment_events"
+
+    event_id = Column(Integer, primary_key=True, autoincrement=True)
+    plan_id = Column(
+        String,
+        ForeignKey("purchase_plans.plan_id"),
+        nullable=False,
+        index=True,
+    )
+    paypal_order_id = Column(String, nullable=True, index=True)
+    event_type = Column(String, nullable=False)
+    from_status = Column(String, nullable=True)
+    to_status = Column(String, nullable=True)
+    detail = Column(String, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
