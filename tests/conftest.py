@@ -32,6 +32,7 @@ import pytest  # noqa: E402
 
 from app import database  # noqa: E402
 from app import models  # noqa: E402,F401  (registers the tables)
+from app.rate_limit import limiter  # noqa: E402
 
 
 _REAL_CONNECT = socket.socket.connect
@@ -63,4 +64,5 @@ def _fresh_database():
     )
     database.Base.metadata.drop_all(bind=database.engine)
     database.Base.metadata.create_all(bind=database.engine)
+    limiter.reset()
     yield
