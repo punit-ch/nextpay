@@ -15,7 +15,7 @@ import {
   Wallet,
 } from "lucide-react";
 
-import { apiRequest, isPayPalUrl } from "./api";
+import { apiRequest, isPayPalUrl, planAccessHeaders, storePlanAccessToken } from "./api";
 import PaymentResult from "./PaymentResult.jsx";
 
 const MAX_QUANTITY = 5;
@@ -98,7 +98,9 @@ function ShoppingFlow() {
         }),
       });
 
-      setPlan(data);
+      storePlanAccessToken(data.plan_id, data.plan_access_token);
+      const { plan_access_token: _accessToken, ...safePlan } = data;
+      setPlan(safePlan);
     } catch (err) {
       setPurchaseError(err.message);
     } finally {
@@ -159,6 +161,7 @@ function ShoppingFlow() {
       if (current.status === "awaiting_user_approval") {
         current = await apiRequest(`/api/plans/${plan.plan_id}/approval`, {
           method: "POST",
+          headers: planAccessHeaders(plan.plan_id),
           body: JSON.stringify({ approved: true }),
         });
         setPlan(current);
@@ -172,7 +175,7 @@ function ShoppingFlow() {
 
       const order = await apiRequest(
         `/api/plans/${plan.plan_id}/paypal/create-order`,
-        { method: "POST" },
+        { method: "POST", headers: planAccessHeaders(plan.plan_id) },
       );
 
       if (!isPayPalUrl(order.approval_url)) {

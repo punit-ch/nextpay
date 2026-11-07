@@ -9,7 +9,7 @@ import {
   XCircle,
 } from "lucide-react";
 
-import { apiRequest } from "./api";
+import { apiRequest, planAccessHeaders } from "./api";
 
 const POLL_INTERVAL_MS = 4000;
 const MAX_POLLS = 15;
@@ -159,6 +159,7 @@ export default function PaymentResult({ path }) {
     try {
       const data = await apiRequest(
         `/api/plans/${encodeURIComponent(planId)}`,
+        { headers: planAccessHeaders(planId) },
       );
       setPlan(data.plan || data);
       setLoadError("");
@@ -202,7 +203,7 @@ export default function PaymentResult({ path }) {
     try {
       const result = await apiRequest(
         `/api/plans/${encodeURIComponent(planId)}/paypal/reconcile`,
-        { method: "POST" },
+        { method: "POST", headers: planAccessHeaders(planId) },
       );
       await loadPlan();
       if (result.outcome === "pending" || result.outcome === "processing") {

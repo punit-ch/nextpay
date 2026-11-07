@@ -7,9 +7,24 @@ export const API_URL = (
  * JSON request helper with readable errors.
  * Network failures and API errors both surface as `Error(message)`.
  */
+export function storePlanAccessToken(planId, token) {
+  if (!planId || !token) {
+    throw new Error("The server did not provide plan access credentials.");
+  }
+  window.sessionStorage.setItem(`nextpay.plan.${planId}`, token);
+}
+
+export function planAccessHeaders(planId) {
+  const token = window.sessionStorage.getItem(`nextpay.plan.${planId}`);
+  return token ? { "X-Plan-Access-Token": token } : {};
+}
+
 export async function apiRequest(path, options = {}) {
-  const { body, ...rest } = options;
-  const headers = body ? { "Content-Type": "application/json" } : {};
+  const { body, headers: suppliedHeaders = {}, ...rest } = options;
+  const headers = {
+    ...(body ? { "Content-Type": "application/json" } : {}),
+    ...suppliedHeaders,
+  };
 
   let response;
   try {

@@ -2,8 +2,10 @@
 from fastapi.testclient import TestClient
 
 from app.main import app
+from tests.helpers import AuthorizedTestClient
 
-client = TestClient(app)
+client = AuthorizedTestClient(app)
+raw_client = TestClient(app)
 
 
 def make_plan(
@@ -50,6 +52,22 @@ def test_valid_plan_uses_server_catalogue_price():
     assert body["purchase"]["total"] == "24.99"
     assert body["status"] == "awaiting_user_approval"
     assert body["payment_status"] == "not_started"
+    assert len(body["plan_access_token"]) >= 32
+
+
+def test_plan_endpoints_reject_missing_or_wrong_credentials():
+    created = make_plan().json()
+    plan_id = created["plan_id"]
+
+    assert raw_client.get(f"/api/plans/{plan_id}").status_code == 401
+    assert raw_client.post(
+        f"/api/plans/{plan_id}/approval",
+        json={"approved": True},
+    ).status_code == 401
+    assert raw_client.get(
+        f"/api/plans/{plan_id}",
+        headers={"X-Plan-Access-Token": "x" * 43},
+    ).status_code == 403
 
 
 def test_budget_exceeded_is_rejected():
@@ -125,10 +143,10 @@ def test_plan_cannot_be_approved_twice():
     assert second.status_code == 409
 
 
-def test_missing_plan_returns_404():
+def test_missing_plan_without_credentials_is_unauthorized():
     response = client.get("/api/plans/not-a-real-plan")
 
-    assert response.status_code == 404
+    assert response.status_code == 401
 
 
 def test_plan_persists_in_database():

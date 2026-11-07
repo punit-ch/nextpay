@@ -25,10 +25,19 @@ Scope: practical review of this repository (Sandbox demo). **Evidence column:** 
 
 ## Open risks (not fixed)
 
-1. **`nextpay.db` is tracked by Git.** It holds purchase history. Run `git rm --cached nextpay.db` (keeps the file) and commit; `*.db` is now in `.gitignore`. You: **you**.
-2. **No authentication.** Anyone with a `plan_id` can view it, cancel an unpaid checkout, or trigger `reconcile` (which only completes a purchase the buyer already approved at PayPal). IDs are random UUIDs, but this is not user-level authorisation.
-3. **No rate limiting.** `/api/agent/recommend` can burn the free OpenRouter quota; `/api/plans` can fill the DB.
-4. **Return URL parameters are untrusted by design.** `token` is only used to look up *our own* ledger row; all money decisions come from PayPal's API response.
-5. **Prompt injection** in the shopping message cannot change prices or approval (the model only fills a validated intent), but it can influence the category/budget it extracts; the user still reviews everything.
-6. **Your local database** contains rows from earlier test runs that wrote to it (e.g. several `review_required`, two `capturing`). Back it up before use; the two `capturing` rows will be reconciled with PayPal the next time their return URL or "check status" is used.
-7. **Rotate credentials** if `.env` was ever shared (for example in a zip you sent to anyone). Sandbox keys are low-risk, but the OpenRouter key is a real account key.
+1. **No user accounts.** Per-plan capability tokens protect plan operations, but they are bearer credentials: anyone who obtains a token can access that plan. Keep tokens out of logs, URLs and support screenshots.
+2. **Rate-limit storage is process-local.** Current limits are 10 AI recommendations/IP/minute and 20 plan creations/IP/minute. They reset on process restart and are not shared across multiple workers or instances. Use Redis or another shared store before scaling horizontally.
+3. **Persistent production database is not configured.** The Render blueprint currently uses SQLite on an ephemeral filesystem. Data can be lost on redeploy/restart. Configure managed PostgreSQL and set `DATABASE_URL` before handling real users or relying on transaction history.
+4. **PayPal Sandbox end-to-end validation remains outstanding.** Automated tests use mocks. Follow the real Sandbox checklist in `docs/SUBMISSION.md` before presenting the payment flow as verified against PayPal.
+5. **Prompt injection.** Shopping text can influence the model's extracted category or budget, although server-side catalogue prices, policy validation and explicit user approval remain authoritative. Continue adversarial testing.
+6. **Local database cleanup.** Back up the local `nextpay.db` before reconciling or removing old test rows. Never delete rows in `capturing` or `review_required` without checking the corresponding PayPal Sandbox order.
+7. **Credential exposure.** Rotate PayPal Sandbox and OpenRouter credentials if `.env` was ever shared or committed. Keep all secrets in deployment environment variables, never frontend variables or Git.
+8. **No webhook/background reconciliation.** Recovery currently depends on the buyer returning to the application or manually checking payment status. Add verified PayPal webhooks and a background reconciler before production use.
+
+## Verified implementation notes
+
+- Per-plan bearer credentials are generated with a cryptographically secure random generator; only SHA-256 hashes are stored.
+- Plan read, approval, order creation, reconciliation and payment-ledger endpoints require the matching `X-Plan-Access-Token`.
+- The PayPal browser return remains public by design; it identifies the server-side order and the server verifies order/capture data with PayPal before changing payment state.
+- The PayPal cancel callback checks the returned order token against the order recorded for that plan.
+- Rate limits are currently process-local: 10 AI recommendations and 20 plan creations per client IP per 60-second window.

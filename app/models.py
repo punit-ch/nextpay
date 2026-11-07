@@ -48,6 +48,24 @@ class PurchasePlan(Base):
         nullable=False,
     )
 
+class PlanAccess(Base):
+    """Hashed capability credential granting access to one purchase plan."""
+
+    __tablename__ = "plan_access"
+
+    plan_id = Column(
+        String,
+        ForeignKey("purchase_plans.plan_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    token_hash = Column(String(64), nullable=False, unique=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+
 class Payment(Base):
     __tablename__ = "payments"
 
