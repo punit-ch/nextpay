@@ -143,7 +143,7 @@ def test_plan_cannot_be_approved_twice():
     assert second.status_code == 409
 
 
-def test_missing_plan_returns_404():
+def test_missing_plan_without_credentials_is_unauthorized():
     response = client.get("/api/plans/not-a-real-plan")
 
     assert response.status_code == 401
