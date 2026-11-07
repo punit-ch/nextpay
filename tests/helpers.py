@@ -150,3 +150,15 @@ class AuthorizedTestClient:
 
     def post(self, url, **kwargs):
         return self.request("POST", url, **kwargs)
+
+    def options(self, url, **kwargs):
+        return self.request("OPTIONS", url, **kwargs)
+
+    def put(self, url, **kwargs):
+        return self.request("PUT", url, **kwargs)
+
+    def patch(self, url, **kwargs):
+        return self.request("PATCH", url, **kwargs)
+
+    def delete(self, url, **kwargs):
+        return self.request("DELETE", url, **kwargs)
