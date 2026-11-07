@@ -18,7 +18,7 @@ NEXTPAY is an AI-assisted shopping agent that keeps the human in control of the 
 4. **Architecture**: use the README architecture diagram.
 5. **Payment safety**: state machine + sequence diagram; "unknown ≠ failed"; idempotency; audit ledger.
 6. **Engineering evidence**: test counts (fill in from your own `pytest` run) and the security review in `docs/SECURITY.md`.
-7. **Limitations & next steps**: webhooks, auth, background reconciler, Postgres (honest list from the README).
+7. **Limitations & next steps**: no user accounts (per-plan bearer tokens instead), process-local rate limits, persistent PostgreSQL deployment, verified PayPal webhooks and background reconciliation.
 
 ## Live-demo script (3 minutes)
 
@@ -58,6 +58,8 @@ These were verified only against mocks. Please run each once with real Sandbox c
 6. Declined-instrument behaviour (use PayPal's sandbox negative-testing options) maps to `failed`.
 
 ## Deployment checklist (requires your accounts; nothing is done for you)
+
+**Do not treat the current Render SQLite configuration as durable production storage.** Configure managed PostgreSQL and set its connection string as `DATABASE_URL` before relying on persisted purchase or payment records. The current in-memory rate limiter is suitable only for a single process; use shared storage before scaling to multiple workers or instances.
 
 1. Push to GitHub **after** `git rm --cached nextpay.db` (see `docs/SECURITY.md`).
 2. Backend: create a Render web service from `render.yaml`; set `BACKEND_URL`, `FRONTEND_URL`, `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `OPENROUTER_API_KEY` in the dashboard (never in Git).
