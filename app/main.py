@@ -1,9 +1,12 @@
+import hashlib
+import hmac
 import logging
+import secrets
 from decimal import Decimal
 from urllib.parse import urlencode
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
@@ -13,7 +16,7 @@ from app import config, payments
 from app.ai_agent import AIUnavailableError, parse_intent
 from app.catalog import CATALOG, list_products
 from app.database import Base, SessionLocal, engine
-from app.models import PurchasePlan
+from app.models import PlanAccess, PurchasePlan
 from app.paypal_client import (
     PayPalError,
     PayPalUnavailableError,
@@ -52,6 +55,35 @@ async def security_headers(request: Request, call_next):
     if request.url.path.startswith("/api/"):
         response.headers.setdefault("Cache-Control", "no-store")
     return response
+
+
+def _hash_plan_access_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def require_plan_access(
+    plan_id: str,
+    x_plan_access_token: str | None = Header(
+        default=None,
+        alias="X-Plan-Access-Token",
+        min_length=32,
+        max_length=128,
+    ),
+) -> None:
+    """Authorize possession of the per-plan capability secret."""
+    if not x_plan_access_token:
+        raise HTTPException(
+            status_code=401,
+            detail="A valid plan access token is required.",
+        )
+
+    with SessionLocal() as db:
+        access = db.get(PlanAccess, plan_id)
+        if access is None or not hmac.compare_digest(
+            access.token_hash,
+            _hash_plan_access_token(x_plan_access_token),
+        ):
+            raise HTTPException(status_code=403, detail="Plan access denied.")
 
 
 class PlanRequest(BaseModel):
@@ -119,8 +151,10 @@ def create_plan(request: PlanRequest):
     except PolicyViolation as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    plan_id = str(uuid4())
+    plan_access_token = secrets.token_urlsafe(32)
     plan = PurchasePlan(
-        plan_id=str(uuid4()),
+        plan_id=plan_id,
         goal=request.goal,
         product_id=purchase["product_id"],
         product_name=purchase["product_name"],
@@ -134,6 +168,12 @@ def create_plan(request: PlanRequest):
 
     with SessionLocal() as db:
         db.add(plan)
+        db.add(
+            PlanAccess(
+                plan_id=plan_id,
+                token_hash=_hash_plan_access_token(plan_access_token),
+            )
+        )
         db.commit()
         db.refresh(plan)
 
@@ -142,11 +182,16 @@ def create_plan(request: PlanRequest):
             "Review the item, quantity, and total. "
             "No payment has been created."
         )
+        response["plan_access_token"] = plan_access_token
         return response
 
 
 @app.post("/api/plans/{plan_id}/approval")
-def approve_plan(plan_id: str, request: ApprovalRequest):
+def approve_plan(
+    plan_id: str,
+    request: ApprovalRequest,
+    _authorized: None = Depends(require_plan_access),
+):
     with SessionLocal() as db:
         plan = db.get(PurchasePlan, plan_id)
 
@@ -218,7 +263,10 @@ def approve_plan(plan_id: str, request: ApprovalRequest):
 
 
 @app.get("/api/plans/{plan_id}")
-def get_plan(plan_id: str):
+def get_plan(
+    plan_id: str,
+    _authorized: None = Depends(require_plan_access),
+):
     with SessionLocal() as db:
         plan = db.get(PurchasePlan, plan_id)
 
@@ -304,7 +352,10 @@ def _paypal_http_error(exc: PayPalError) -> HTTPException:
 
 
 @app.post("/api/plans/{plan_id}/paypal/create-order")
-async def create_plan_paypal_order(plan_id: str):
+async def create_plan_paypal_order(
+    plan_id: str,
+    _authorized: None = Depends(require_plan_access),
+):
     try:
         return await payments.create_order_for_plan(
             plan_id,
@@ -384,7 +435,10 @@ async def paypal_cancel(
 
 
 @app.post("/api/plans/{plan_id}/paypal/reconcile")
-async def reconcile_plan_payment(plan_id: str):
+async def reconcile_plan_payment(
+    plan_id: str,
+    _authorized: None = Depends(require_plan_access),
+):
     """Re-check a plan's payment against PayPal (used by the 'check again' button)."""
     try:
         outcome = await payments.reconcile_plan(
@@ -414,7 +468,10 @@ async def reconcile_plan_payment(plan_id: str):
 
 
 @app.get("/api/plans/{plan_id}/payment")
-def get_plan_payment(plan_id: str):
+def get_plan_payment(
+    plan_id: str,
+    _authorized: None = Depends(require_plan_access),
+):
     """Payment ledger and audit trail for a plan."""
     ledger = payments.get_payment_ledger(plan_id)
 
