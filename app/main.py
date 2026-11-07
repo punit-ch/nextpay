@@ -425,6 +425,10 @@ async def paypal_cancel(
     plan_id: str = Query(max_length=64),
     token: str | None = Query(default=None, max_length=256),
 ):
+    if not token:
+        outcome = payments.ReturnOutcome("cancelled", plan_id, "missing_order_token")
+        return _frontend_redirect(outcome)
+
     try:
         outcome = payments.cancel_checkout(plan_id, token)
     except Exception:
