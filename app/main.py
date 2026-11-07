@@ -26,6 +26,7 @@ from app.paypal_client import (
     get_paypal_order,
 )
 from app.policy import PolicyViolation, validate_purchase
+from app.rate_limit import rate_limit_middleware
 
 logger = logging.getLogger("nextpay.api")
 
@@ -46,6 +47,8 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "X-Plan-Access-Token"],
 )
+
+app.middleware("http")(rate_limit_middleware)
 
 
 @app.middleware("http")
