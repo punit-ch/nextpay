@@ -97,7 +97,8 @@ def test_paypal_cancellation_updates_payment_ledger(monkeypatch):
     assert created.status_code == 200
 
     cancelled = client.get(
-        f"/api/paypal/cancel?plan_id={plan_id}",
+        "/api/paypal/cancel",
+        params={"plan_id": plan_id, "token": order_id},
         follow_redirects=False,
     )
 
