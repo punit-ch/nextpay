@@ -168,6 +168,8 @@ def create_plan(request: PlanRequest):
 
     with SessionLocal() as db:
         db.add(plan)
+        # Flush the parent row before inserting its foreign-key child.
+        db.flush()
         db.add(
             PlanAccess(
                 plan_id=plan_id,
