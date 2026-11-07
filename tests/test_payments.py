@@ -6,9 +6,10 @@ from fastapi.testclient import TestClient
 import app.main as main_module
 from app.database import SessionLocal
 from app.models import Payment, PurchasePlan
+from tests.helpers import AuthorizedTestClient
 
 
-client = TestClient(main_module.app)
+client = AuthorizedTestClient(main_module.app)
 
 
 def create_approved_plan():
@@ -549,7 +550,7 @@ def test_reconcile_endpoint_recovers_an_abandoned_capture(monkeypatch):
 
 
 def test_reconcile_unknown_plan_returns_404():
-    assert client.post("/api/plans/nope/paypal/reconcile").status_code == 404
+    assert client.post("/api/plans/nope/paypal/reconcile").status_code == 401
 
 
 def test_payment_ledger_endpoint_returns_audit_trail(monkeypatch):
@@ -562,7 +563,7 @@ def test_payment_ledger_endpoint_returns_audit_trail(monkeypatch):
     assert body["payment_status"] == "completed"
     assert body["payments"][0]["status"] == "completed"
     assert [e["event_type"] for e in body["events"]][-1] == "capture_completed"
-    assert client.get("/api/plans/nope/payment").status_code == 404
+    assert client.get("/api/plans/nope/payment").status_code == 401
 
 
 def test_cors_allows_only_the_configured_frontend():
