@@ -394,8 +394,8 @@ def test_create_order_requires_approval():
     assert response.status_code == 403
 
 
-def test_create_order_for_unknown_plan_returns_404():
-    assert client.post("/api/plans/nope/paypal/create-order").status_code == 404
+def test_create_order_for_unknown_plan_without_credentials_returns_401():
+    assert client.post("/api/plans/nope/paypal/create-order").status_code == 401
 
 
 def test_second_create_order_is_rejected(monkeypatch):
