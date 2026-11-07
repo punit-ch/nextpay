@@ -25,8 +25,8 @@ NEXTPAY separates **what the AI may do** from **what only the server may decide*
 | Area | What exists |
 |---|---|
 | AI intent parsing | OpenRouter (`openrouter/free`) → validated JSON intent; model output cannot remove the approval requirement |
-| Recommendations | Filtered from the server catalogue by category and budget |
-| Purchase plans | Quantity 1-5, budget cap, server-calculated total, persisted in SQLite |
+| Recommendations | Filtered from the server catalogue by category and budget; limited to 10 requests/IP/minute |
+| Purchase plans | Quantity 1-5, budget cap, server-calculated total, persisted in SQLite; limited to 20 creations/IP/minute |
 | Approval | Explicit approve/reject; atomic, cannot be approved twice |
 | PayPal Sandbox | Order creation, approval redirect, capture, cancel handling |
 | Verification | Order ID, purchase-unit count, `reference_id`, `custom_id`, capture ID/status, currency, exact amount, local ledger |
@@ -241,7 +241,7 @@ Interactive docs: `/docs`. All responses under `/api/` are `Cache-Control: no-st
 ## 16. Known limitations
 
 - No user accounts: the unguessable `plan_id` acts as the capability to view/continue a plan.
-- No rate limiting; the AI endpoint can consume the free OpenRouter quota.
+- Rate limits are process-local (10 AI recommendations/IP/minute; 20 plan creations/IP/minute). Use a shared Redis store before running multiple workers or instances.
 - One product per plan; fictional catalogue; USD only.
 - No PayPal **webhooks** and no background reconciler: recovery happens on the return URL, on refresh, or via the "Check payment status" button.
 - Refunds and disputes are not implemented.
