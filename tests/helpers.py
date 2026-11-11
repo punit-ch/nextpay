@@ -116,3 +116,49 @@ def read_state(plan_id):
             plan.paypal_capture_id,
             payment.paypal_capture_id,
         )
+
+
+
+class AuthorizedTestClient:
+    """Test client that remembers capability tokens returned by plan creation."""
+
+    def __init__(self, app):
+        from fastapi.testclient import TestClient
+
+        self._client = TestClient(app)
+        self._tokens = {}
+
+    def request(self, method, url, **kwargs):
+        import re
+
+        match = re.match(r"^/api/plans/([^/?]+)", url)
+        if match:
+            token = self._tokens.get(match.group(1))
+            if token:
+                headers = dict(kwargs.get("headers") or {})
+                headers.setdefault("X-Plan-Access-Token", token)
+                kwargs["headers"] = headers
+
+        response = self._client.request(method, url, **kwargs)
+        if method.upper() == "POST" and url == "/api/plans" and response.status_code == 201:
+            body = response.json()
+            self._tokens[body["plan_id"]] = body["plan_access_token"]
+        return response
+
+    def get(self, url, **kwargs):
+        return self.request("GET", url, **kwargs)
+
+    def post(self, url, **kwargs):
+        return self.request("POST", url, **kwargs)
+
+    def options(self, url, **kwargs):
+        return self.request("OPTIONS", url, **kwargs)
+
+    def put(self, url, **kwargs):
+        return self.request("PUT", url, **kwargs)
+
+    def patch(self, url, **kwargs):
+        return self.request("PATCH", url, **kwargs)
+
+    def delete(self, url, **kwargs):
+        return self.request("DELETE", url, **kwargs)

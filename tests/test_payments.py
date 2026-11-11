@@ -6,9 +6,10 @@ from fastapi.testclient import TestClient
 import app.main as main_module
 from app.database import SessionLocal
 from app.models import Payment, PurchasePlan
+from tests.helpers import AuthorizedTestClient
 
 
-client = TestClient(main_module.app)
+client = AuthorizedTestClient(main_module.app)
 
 
 def create_approved_plan():
@@ -96,7 +97,8 @@ def test_paypal_cancellation_updates_payment_ledger(monkeypatch):
     assert created.status_code == 200
 
     cancelled = client.get(
-        f"/api/paypal/cancel?plan_id={plan_id}",
+        "/api/paypal/cancel",
+        params={"plan_id": plan_id, "token": order_id},
         follow_redirects=False,
     )
 
@@ -392,8 +394,8 @@ def test_create_order_requires_approval():
     assert response.status_code == 403
 
 
-def test_create_order_for_unknown_plan_returns_404():
-    assert client.post("/api/plans/nope/paypal/create-order").status_code == 404
+def test_create_order_for_unknown_plan_without_credentials_returns_401():
+    assert client.post("/api/plans/nope/paypal/create-order").status_code == 401
 
 
 def test_second_create_order_is_rejected(monkeypatch):
@@ -522,6 +524,20 @@ def test_cancel_with_wrong_order_token_does_not_cancel(monkeypatch):
     )
 
 
+def test_cancel_without_order_token_updates_payment_state(monkeypatch):
+    plan_id, _ = start_checkout(monkeypatch)
+
+    response = client.get(
+        "/api/paypal/cancel",
+        params={"plan_id": plan_id},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "/payment/cancelled" in response.headers["location"]
+    assert ledger_state(plan_id) == ("cancelled_by_buyer", "cancelled_by_buyer")
+
+
 def test_cancel_after_completion_does_not_show_cancelled(monkeypatch):
     plan_id, order_id = start_checkout(monkeypatch)
     install_paypal(monkeypatch, plan_id, order_id)
@@ -549,7 +565,7 @@ def test_reconcile_endpoint_recovers_an_abandoned_capture(monkeypatch):
 
 
 def test_reconcile_unknown_plan_returns_404():
-    assert client.post("/api/plans/nope/paypal/reconcile").status_code == 404
+    assert client.post("/api/plans/nope/paypal/reconcile").status_code == 401
 
 
 def test_payment_ledger_endpoint_returns_audit_trail(monkeypatch):
@@ -562,7 +578,7 @@ def test_payment_ledger_endpoint_returns_audit_trail(monkeypatch):
     assert body["payment_status"] == "completed"
     assert body["payments"][0]["status"] == "completed"
     assert [e["event_type"] for e in body["events"]][-1] == "capture_completed"
-    assert client.get("/api/plans/nope/payment").status_code == 404
+    assert client.get("/api/plans/nope/payment").status_code == 401
 
 
 def test_cors_allows_only_the_configured_frontend():
