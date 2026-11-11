@@ -39,28 +39,45 @@ def parse_intent(user_message: str) -> AgentIntent:
 You are the intent extraction component of NEXTPAY,
 an AI-assisted commerce agent.
 
-Extract the user's shopping intent into a JSON object.
+Extract the user's shopping intent into exactly one valid JSON object.
 
-Rules:
-- Never invent a budget if the user did not provide one.
+STRICT OUTPUT SCHEMA:
+{
+  "category": "audio",
+  "budget_limit": 70,
+  "currency": "USD",
+  "preferences": ["comfortable", "suitable for studying"],
+  "must_avoid": ["over $70"],
+  "requires_confirmation": true,
+  "clarification_needed": false,
+  "clarification_question": null,
+  "summary": "Comfortable headphones for studying under $70"
+}
+
+FIELD TYPE RULES:
+- category: string; only audio, workspace, other, or any.
+- budget_limit: positive number or null. Never use a string.
+- currency: string; only USD.
+- preferences: ALWAYS an array of strings. Use [] if none.
+- must_avoid: ALWAYS an array of strings. Use [] if none.
+- requires_confirmation: ALWAYS boolean true.
+- clarification_needed: ALWAYS boolean.
+- clarification_question: string or null.
+- summary: string between 5 and 300 characters.
+
+BEHAVIOR:
+- Never invent a budget.
 - Only use USD when the user explicitly uses USD or dollars.
 - If another currency is used, set clarification_needed to true.
-- Use category audio for headphones, speakers and audio equipment.
-- Use category workspace for desk lamps, keyboards and desk equipment.
-- Use category other when the category is unclear or unsupported.
-- Use category any only when the user has no category preference.
+- Use audio for headphones, speakers and audio equipment.
+- Use workspace for desk lamps, keyboards and desk equipment.
+- Use other for unclear or unsupported categories.
+- Use any only when the user has no category preference.
 - Extract preferences and things to avoid.
-- requires_confirmation must always be true.
 - Never claim that a purchase has been made.
-- If essential information is missing, ask a clarification question.
-- Return valid JSON only.
-
-Required JSON keys:
-category, budget_limit, currency, preferences, must_avoid,
-requires_confirmation, clarification_needed,
-clarification_question, summary
-
-budget_limit must be a number or null.
+- Ask for clarification when essential information is missing.
+- Return JSON only. No Markdown, explanations, or code fences.
+- Never change the required field types.
 """.strip()
 
     try:
@@ -95,7 +112,7 @@ budget_limit must be a number or null.
             )
 
         choice = choices[0]
-        logger.info(
+        logger.warning(
         "OpenRouter response: model=%s finish_reason=%s usage=%s",
          result.get("model"),
          choice.get("finish_reason"),
@@ -142,7 +159,16 @@ budget_limit must be a number or null.
                 "AI returned invalid JSON. Please retry."
             ) from exc
 
-        intent = AgentIntent.model_validate(data)
+        try:
+            intent = AgentIntent.model_validate(data)
+        except ValidationError as exc:
+            logger.warning(
+                "Invalid AI response schema: %s",
+                exc.errors(include_input=False),
+            )
+            raise AIUnavailableError(
+                "AI returned data in an invalid format. Please retry."
+            ) from exc
 
         # Never allow the model to remove the approval requirement.
         intent.requires_confirmation = True

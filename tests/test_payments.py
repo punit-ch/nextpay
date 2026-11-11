@@ -524,6 +524,20 @@ def test_cancel_with_wrong_order_token_does_not_cancel(monkeypatch):
     )
 
 
+def test_cancel_without_order_token_updates_payment_state(monkeypatch):
+    plan_id, _ = start_checkout(monkeypatch)
+
+    response = client.get(
+        "/api/paypal/cancel",
+        params={"plan_id": plan_id},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "/payment/cancelled" in response.headers["location"]
+    assert ledger_state(plan_id) == ("cancelled_by_buyer", "cancelled_by_buyer")
+
+
 def test_cancel_after_completion_does_not_show_cancelled(monkeypatch):
     plan_id, order_id = start_checkout(monkeypatch)
     install_paypal(monkeypatch, plan_id, order_id)

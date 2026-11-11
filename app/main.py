@@ -301,11 +301,30 @@ def agent_recommend(request: AgentRequest):
         }
 
     candidates = []
+    user_query = request.message.casefold()
 
     for product in CATALOG.values():
+
+        # Enforce category matching.
         if intent.category not in ("any", product["category"]):
             continue
 
+        # Match the actual requested product.
+        keywords = product.get("keywords", [])
+        searchable_terms = [
+            product["name"],
+            *keywords,
+        ]
+
+        matches_query = any(
+            term.casefold() in user_query
+            for term in searchable_terms
+        )
+
+        if not matches_query:
+            continue
+
+        # Enforce budget.
         if product["price"] > intent.budget_limit:
             continue
 
@@ -430,10 +449,6 @@ async def paypal_cancel(
     plan_id: str = Query(max_length=64),
     token: str | None = Query(default=None, max_length=256),
 ):
-    if not token:
-        outcome = payments.ReturnOutcome("cancelled", plan_id, "missing_order_token")
-        return _frontend_redirect(outcome)
-
     try:
         outcome = payments.cancel_checkout(plan_id, token)
     except Exception:
