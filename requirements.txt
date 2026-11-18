@@ -1,0 +1,10 @@
+# Runtime
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+sqlalchemy>=2.0
+httpx>=0.27
+python-dotenv>=1.0
+
+# Tests (kept here so `pip install -r requirements.txt` is enough to run pytest)
+pytest>=8.0

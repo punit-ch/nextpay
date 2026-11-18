@@ -1,0 +1,32 @@
+# Render Blueprint for the API (free-tier compatible). NOT deployed by this
+# repository: you must create the service yourself (see README, "Deployment").
+services:
+  - type: web
+    name: nextpay-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.3
+      - key: APP_ENV
+        value: production
+      - key: PAYPAL_BASE_URL
+        value: https://api-m.sandbox.paypal.com
+      - key: DATABASE_URL
+        # Free instances have an ephemeral disk: SQLite data resets on redeploy.
+        value: sqlite:///./nextpay.db
+      - key: BACKEND_URL
+        sync: false   # e.g. https://nextpay-api.onrender.com
+      - key: FRONTEND_URL
+        sync: false   # e.g. https://nextpay.vercel.app
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODEL
+        value: openrouter/free
