@@ -4,11 +4,16 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from app.config import database_url
 
 DATABASE_URL = database_url()
+# Some providers hand out "postgres://"; SQLAlchemy 2 only accepts "postgresql://".
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
 
 _is_sqlite = DATABASE_URL.startswith("sqlite")
 
 engine = create_engine(
     DATABASE_URL,
+    # Serverless Postgres (e.g. Neon) drops idle connections; re-check before use.
+    pool_pre_ping=True,
     # `timeout` is SQLite's busy timeout: concurrent writers wait instead of
     # failing immediately with "database is locked".
     connect_args=(
